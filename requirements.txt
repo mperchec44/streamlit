@@ -4,7 +4,3 @@ numpy==1.26.4
 pandas
 pillow
 scikit-learn
-matplotlib
-requests
-plotly
-
