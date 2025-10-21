@@ -1,5 +1,4 @@
-
-
+import io
 import json
 import pickle
 import numpy as np
@@ -11,7 +10,6 @@ st.title("Modèle Word2Vec test streamlit")
 # --------- Chargement du modèle (.h5) ---------
 @st.cache_resource
 def get_model():
-    # compile=False évite d'exiger les objets de loss/metrics au chargement
     return load_model("word2vec.h5", compile=False)
 
 try:
@@ -21,28 +19,22 @@ except Exception as e:
     st.error(f"Échec du chargement du modèle: {e}")
     st.stop()
 
-# --------- Inspection rapide ---------
+# --------- Résumé du modèle ---------
 st.subheader("Résumé du modèle")
+buf = io.StringIO()
 try:
-    st.text(model.summary(expand_nested=True))
+    model.summary(print_fn=lambda x: buf.write(x + "\n"))
+    st.text(buf.getvalue())
 except Exception:
-    # summary peut écrire sur stdout; on fait simple si besoin
     st.write([l.name for l in model.layers])
 
-# --------- Récupération des embeddings si disponibles ---------
-embedding_layer = None
-for layer in model.layers:
-    # cherche une couche Embedding dans le modèle chargé
-    if layer.__class__.__name__.lower() == "embedding":
-        embedding_layer = layer
-        break
-
+# --------- Récupération des embeddings ---------
+embedding_layer = next((l for l in model.layers if l.__class__.__name__.lower() == "embedding"), None)
 if embedding_layer is None:
     st.warning("Aucune couche Embedding trouvée dans le modèle. Impossible de calculer les similarités.")
     st.stop()
 
-# poids de la couche d'embedding -> matrice [vocab_size, embedding_dim]
-emb_weights = embedding_layer.get_weights()[0]  # ndarray
+emb_weights = embedding_layer.get_weights()[0]  # [vocab_size, embedding_dim]
 vocab_size, embedding_dim = emb_weights.shape
 st.write(f"**Embedding:** vocab_size={vocab_size}, embedding_dim={embedding_dim}")
 
@@ -52,25 +44,24 @@ def dot_product(v1, v2):
 
 def cosine_similarity(v1, v2):
     denom = np.sqrt(dot_product(v1, v1) * dot_product(v2, v2))
-    if denom == 0:
-        return 0.0
-    return float(dot_product(v1, v2) / denom)
+    return 0.0 if denom == 0 else float(dot_product(v1, v2) / denom)
 
 def find_closest(idx, vectors, topk=10):
     q = vectors[idx]
-    sims = np.dot(vectors, q)  # plus rapide
-    # normalisation pour cosine
+    sims = np.dot(vectors, q)
     norms = np.linalg.norm(vectors, axis=1) * np.linalg.norm(q)
-    sims = np.divide(sims, norms, out=np.zeros_like(sims), where=norms!=0)
-    # enlève l’index lui-même
-    sims[idx] = -np.inf
+    sims = np.divide(sims, norms, out=np.zeros_like(sims), where=norms != 0)
+    sims[idx] = -np.inf  # exclure lui-même
     top_idx = np.argpartition(-sims, range(topk))[:topk]
     top_idx = top_idx[np.argsort(-sims[top_idx])]
     return [(int(i), float(sims[i])) for i in top_idx]
 
-# --------- Dictionnaire (facultatif) ---------
+# --------- Vocabulaire (facultatif) ---------
 st.subheader("Vocabulaire (facultatif)")
-st.caption("Si tu as un tokenizer (pickle) ou un mapping word2idx/idx2word (JSON), charge-le ici pour faire des requêtes par mots.")
+st.caption("Charge un tokenizer (pickle) ou un mapping JSON (word2idx) pour requêter par *mot*.")
+tok_file = st.file_uploader("Uploader `tokenizer.pkl` ou `vocab.json`", type=["pkl", "json"])
+
+word2idx, idx2word = None, None
 if tok_file is not None and tok_file.name.endswith(".pkl"):
     try:
         tokenizer = pickle.load(tok_file)
@@ -96,7 +87,7 @@ st.subheader("Similarité (cosine) dans l’espace d’embedding")
 mode = st.radio("Saisir par…", ["Index", "Mot"], horizontal=True)
 
 if mode == "Index":
-    idx = st.number_input("Index du mot (0 … {vocab_size-1})", min_value=0, max_value=max(0, vocab_size-1), value=0, step=1)
+    idx = st.number_input("Index du mot", min_value=0, max_value=max(0, vocab_size - 1), value=0, step=1)
     topk = st.slider("Nombre de voisins", 5, 30, 10)
     if st.button("Trouver voisins"):
         voisins = find_closest(int(idx), emb_weights, topk)
@@ -117,4 +108,4 @@ else:  # par Mot
             else:
                 i = word2idx[w]
                 voisins = find_closest(int(i), emb_weights, topk)
-                st.table([{"mot": idx2word.get(j, f\"<{j}>\"), \"index\": j, \"cosine\": s} for j, s in voisins])
+                st.table([{"mot": idx2word.get(j, f"<{j}>"), "index": j, "cosine": s} for j, s in voisins])
